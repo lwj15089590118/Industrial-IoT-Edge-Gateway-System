@@ -1,0 +1,36 @@
+# ============================================================================
+# config.docker.yaml — 容器环境专用网关配置
+# 与 config.yaml 的唯一区别：主机地址从 127.0.0.1 改为 docker-compose 服务名。
+# Dockerfile 构建时由 compose 先把本文件重命名为 config.yaml（见 docker/Dockerfile 说明），
+# 本地开发仍使用原 config.yaml，两套环境互不干扰。
+# ============================================================================
+
+modbus:
+  host: "simulator"     # 模拟PLC的compose服务名
+  port: 502
+  unit_id: 1
+  timeout: 3
+  slave_id: 1
+
+mqtt:
+  broker: "tcp://mosquitto:1883"   # MQTT Broker 服务名
+  client_id: "edge-gateway-01"
+  username: ""
+  password: ""
+  topic: "factory/line1/metrics"
+  qos: 1
+  retry_wait: 5
+
+collect_interval_ms: 1000
+
+registers:
+  - { address: 0, quantity: 1, name: "voltage",       desc: "线电压",     unit: "V",    scale: 0.1,   offset: 0 }
+  - { address: 1, quantity: 1, name: "current",       desc: "相电流",     unit: "A",    scale: 0.01,  offset: 0 }
+  - { address: 2, quantity: 1, name: "power_factor",  desc: "功率因数",   unit: "",     scale: 0.001, offset: 0 }
+  - { address: 3, quantity: 1, name: "temperature",   desc: "柜内温度",   unit: "°C",   scale: 0.1,   offset: 0 }
+  - { address: 4, quantity: 1, name: "active_power",  desc: "有功功率",   unit: "W",    scale: 1,     offset: 0 }
+  - { address: 5, quantity: 1, name: "frequency",     desc: "电网频率",   unit: "Hz",   scale: 0.1,   offset: 45.0 }
+  - { address: 6, quantity: 1, name: "reactive_power",desc: "无功功率",   unit: "var",  scale: 1,     offset: 0 }
+  - { address: 7, quantity: 1, name: "apparent_power",desc: "视在功率",   unit: "VA",   scale: 1,     offset: 0 }
+  - { address: 8, quantity: 1, name: "energy_total",  desc: "累计电能",   unit: "kWh",  scale: 0.1,   offset: 0 }
+  - { address: 9, quantity: 1, name: "status_word",   desc: "设备状态字", unit: "",     scale: 1,     offset: 0 }

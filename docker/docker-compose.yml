@@ -1,0 +1,168 @@
+# ============================================================================
+# docker-compose.yml — 工业物联网边缘网关系统 · 一键编排
+# ----------------------------------------------------------------------------
+# 服务拓扑（7 个服务）：
+#   simulator  模拟PLC（Modbus/TCP :502）
+#   mosquitto  MQTT Broker（:1883）
+#   influxdb   时序数据库（:8086，首启自动执行 database/influxdb_init.iql）
+#   gateway    Go边缘网关（Modbus轮询 -> MQTT发布）
+#   backend    Flask API + WebSocket（:5000，含MQTT订阅落库）
+#   alert-engine 告警引擎（阈值检测 -> 告警写库 + MQTT广播）
+#   frontend   React仪表盘（nginx :80 -> 宿主机 :3000）
+#
+# 使用：
+#   cd docker
+#   docker compose up -d --build     # 一键启动
+#   docker compose ps                # 查看状态
+#   docker compose logs -f gateway   # 跟踪网关日志
+#   docker compose down              # 停止（-v 可同时清除数据卷）
+# ============================================================================
+version: "3.8"
+
+services:
+  # ------------------------------------------------------------------
+  # 1. MQTT 消息总线
+  # ------------------------------------------------------------------
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: iiot-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"        # 供宿主机调试（mosquitto_sub / MQTTX 客户端）
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -t '#' -C 1 -W 3 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ------------------------------------------------------------------
+  # 2. InfluxDB 时序数据库（1.8 社区版，内置初始化脚本机制）
+  # ------------------------------------------------------------------
+  influxdb:
+    image: influxdb:1.8
+    container_name: iiot-influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"        # 管理界面 http://localhost:8086
+    environment:
+      INFLUX_DB: ${INFLUX_DB:-factory_metrics}
+    volumes:
+      - influxdb-data:/var/lib/influxdb
+      # 首次启动自动执行：建库 + 30天保留策略 + 5分钟降采样连续查询
+      - ../database/influxdb_init.iql:/docker-entrypoint-initdb.d/influxdb_init.iql:ro
+    healthcheck:
+      test: ["CMD", "influx", "-execute", "SHOW DATABASES"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ------------------------------------------------------------------
+  # 3. 模拟 PLC（Modbus/TCP 服务端，供网关轮询）
+  # ------------------------------------------------------------------
+  simulator:
+    build:
+      context: ../simulator
+    image: iiot/simulator:1.0
+    container_name: iiot-simulator
+    restart: unless-stopped
+    ports:
+      - "502:502"          # Modbus 标准端口（宿主机需未被占用；不可用时删除此映射，
+                           # 网关在 compose 内网仍可访问）
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket;s=socket.create_connection(('127.0.0.1',502),3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ------------------------------------------------------------------
+  # 4. Go 边缘网关（Modbus 采集 -> MQTT 发布）
+  # ------------------------------------------------------------------
+  gateway:
+    build:
+      context: ../gateway
+    image: iiot/gateway:1.0
+    container_name: iiot-gateway
+    restart: unless-stopped
+    depends_on:
+      simulator:
+        condition: service_started
+      mosquitto:
+        condition: service_started
+    # 网关自带断线重连，无需等待健康检查通过
+    command: ["/app/gateway", "/app/config.yaml"]
+
+  # ------------------------------------------------------------------
+  # 5. Flask 后端 API（REST + WebSocket + MQTT订阅落库）
+  # ------------------------------------------------------------------
+  backend:
+    build:
+      context: ../backend
+    image: iiot/backend:1.0
+    container_name: iiot-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"        # REST + WebSocket 入口
+    environment:
+      INFLUX_HOST: influxdb
+      INFLUX_PORT: "8086"
+      INFLUX_DB: ${INFLUX_DB:-factory_metrics}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      RULES_DB_PATH: /data/rules.db   # 规则库放数据卷，与告警引擎共享
+    volumes:
+      - backend-data:/data
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  # ------------------------------------------------------------------
+  # 6. 告警引擎（复用 backend 镜像，仅命令不同）
+  # ------------------------------------------------------------------
+  alert-engine:
+    image: iiot/backend:1.0
+    container_name: iiot-alert-engine
+    restart: unless-stopped
+    command: ["python", "alert_engine.py"]
+    environment:
+      INFLUX_HOST: influxdb
+      INFLUX_PORT: "8086"
+      INFLUX_DB: ${INFLUX_DB:-factory_metrics}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      RULES_DB_PATH: /data/rules.db
+    volumes:
+      - backend-data:/data
+    depends_on:
+      backend:
+        condition: service_started   # 需等 backend 建好默认规则表
+      influxdb:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------
+  # 7. React 前端仪表盘（nginx 静态托管）
+  # ------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+    image: iiot/frontend:1.0
+    container_name: iiot-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"          # 访问入口 http://localhost:3000
+    depends_on:
+      backend:
+        condition: service_started
+
+# ---------------------------------------------------------------------------
+# 数据卷：数据库与规则文件持久化，容器重建不丢数据
+# ---------------------------------------------------------------------------
+volumes:
+  influxdb-data:
+  mosquitto-data:
+  backend-data:
