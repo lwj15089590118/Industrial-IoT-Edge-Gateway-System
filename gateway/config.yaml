@@ -1,0 +1,42 @@
+# ============================================================================
+# config.yaml — 边缘网关配置文件
+# 所有运行参数集中在此，改配置无需改代码。
+# ============================================================================
+
+# ---------- Modbus/TCP 连接参数（指向模拟PLC或真实PLC） ----------
+modbus:
+  host: "127.0.0.1"     # PLC / 模拟器 IP 地址
+  port: 502             # Modbus TCP 标准端口
+  unit_id: 1            # Modbus 从站号（Unit Identifier）
+  timeout: 3            # 单次读写超时（秒）
+  slave_id: 1           # 兼容字段：与 unit_id 保持一致
+
+# ---------- MQTT 连接与发布参数 ----------
+mqtt:
+  broker: "tcp://127.0.0.1:1883"        # Broker 地址（Docker 内改为 mosquitto:1883）
+  client_id: "edge-gateway-01"          # 客户端唯一标识，同时作为上报的 device_id
+  username: ""                          # 匿名接入留空
+  password: ""
+  topic: "factory/line1/metrics"        # 发布主题：工厂/产线1/电力测点
+  qos: 1                                # QoS1：至少一次，兼顾可靠与吞吐
+  retry_wait: 5                         # 断线重连最大间隔（秒）
+
+# ---------- 采集周期 ----------
+collect_interval_ms: 1000               # 定时采集间隔：每秒 1 次
+
+# ---------- 寄存器地址表（10 个保持寄存器测点） ----------
+# 说明：
+#   address = 保持寄存器起始地址；quantity = 占用寄存器数（本表均为 1）
+#   工程量 = 原始值(16位无符号) * scale + offset
+#   模拟PLC按相同表写入数据，网关按此表读出换算。
+registers:
+  - { address: 0, quantity: 1, name: "voltage",       desc: "线电压",     unit: "V",    scale: 0.1,   offset: 0 }    # 2200 -> 220.0V
+  - { address: 1, quantity: 1, name: "current",       desc: "相电流",     unit: "A",    scale: 0.01,  offset: 0 }    # 1000 -> 10.00A
+  - { address: 2, quantity: 1, name: "power_factor",  desc: "功率因数",   unit: "",     scale: 0.001, offset: 0 }    # 980  -> 0.98
+  - { address: 3, quantity: 1, name: "temperature",   desc: "柜内温度",   unit: "°C",   scale: 0.1,   offset: 0 }    # 352  -> 35.2°C
+  - { address: 4, quantity: 1, name: "active_power",  desc: "有功功率",   unit: "W",    scale: 1,     offset: 0 }
+  - { address: 5, quantity: 1, name: "frequency",     desc: "电网频率",   unit: "Hz",   scale: 0.1,   offset: 45.0 } # 50 -> 50.0Hz
+  - { address: 6, quantity: 1, name: "reactive_power",desc: "无功功率",   unit: "var",  scale: 1,     offset: 0 }
+  - { address: 7, quantity: 1, name: "apparent_power",desc: "视在功率",   unit: "VA",   scale: 1,     offset: 0 }
+  - { address: 8, quantity: 1, name: "energy_total",  desc: "累计电能",   unit: "kWh",  scale: 0.1,   offset: 0 }
+  - { address: 9, quantity: 1, name: "status_word",   desc: "设备状态字", unit: "",     scale: 1,     offset: 0 }    # 位图：bit0运行 bit1故障 bit2通讯
