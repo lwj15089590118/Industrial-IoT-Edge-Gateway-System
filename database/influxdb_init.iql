@@ -1,0 +1,30 @@
+-- ============================================================================
+-- influxdb_init.iql — InfluxDB 时序数据库初始化脚本
+-- ----------------------------------------------------------------------------
+-- 用法（容器首次启动后执行一次）：
+--   influx -host 127.0.0.1 -port 8086 -execute "file" 或逐条执行本文件
+--   Docker 环境：docker exec -it iiot-influxdb influx < /docker-entrypoint-initdb.d/influxdb_init.iql
+--   （docker-compose 已将本文件挂载为自动初始化脚本，容器首启时自动执行）
+-- ============================================================================
+
+-- 1. 创建业务数据库：存储工厂电力测点时序数据
+CREATE DATABASE "factory_metrics";
+
+-- 2. 创建保留策略：
+--    名称   rp_30d     —— 保留 30 天，单节点副本
+--    语义   历史 30 天自动过期清理，控制磁盘占用（1 秒 1 条 × 10 测点 ≈ 每天 86 万字段点）
+CREATE RETENTION POLICY "rp_30d" ON "factory_metrics"
+    DURATION 30d REPLICATION 1 DEFAULT;
+
+-- 3. （可选）创建连续查询：每 5 分钟对原始数据降采样，供大时间跨度趋势图查询
+--    说明：mean(field) 按 5 分钟窗口聚合，写入同库 downsample_5m 测量点
+CREATE CONTINUOUS QUERY "cq_metrics_5m" ON "factory_metrics"
+BEGIN
+    SELECT mean(*) INTO "factory_metrics"."rp_30d"."metrics_5m"
+    FROM "factory_metrics"."rp_30d"."metrics"
+    GROUP BY time(5m), "device_id"
+END;
+
+-- 4. 验证：查看数据库与保留策略是否创建成功
+SHOW DATABASES;
+SHOW RETENTION POLICIES ON "factory_metrics";

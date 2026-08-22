@@ -35,7 +35,7 @@ flowchart LR
     end
 
     subgraph 应用层
-        API[Flask REST API :5000<br/>+ WebSocket :5001]
+        API[Flask REST API + WebSocket :5000]
         UI[React 仪表盘 :3000<br/>实时卡片 / 趋势图 / 告警列表]
     end
 
