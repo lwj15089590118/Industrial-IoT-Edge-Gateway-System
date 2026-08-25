@@ -152,7 +152,8 @@ def encode_registers(snapshot: dict) -> list:
         int(round(snapshot["power_factor"] / 0.001)),   # 地址 2
         int(round(snapshot["temperature"] / 0.1)),      # 地址 3
         int(round(snapshot["active_power"] / 1)),       # 地址 4
-        int(round(snapshot["frequency"] - 45.0)),       # 地址 5：网关侧 offset=45 还原
+        int(round((snapshot["frequency"] - 45.0) / 0.1)),  # 地址 5：先减偏移45再除以scale0.1
+                                                           # 与网关 raw*0.1+45 严格互逆（50Hz -> raw 50）
         int(round(snapshot["reactive_power"] / 1)),     # 地址 6
         int(round(snapshot["apparent_power"] / 1)),     # 地址 7
         int(round(snapshot["energy_total"] / 0.1)),     # 地址 8
