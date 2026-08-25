@@ -169,7 +169,14 @@ def run_engine() -> None:
     log.info("告警引擎开始运行：检测周期 %ds，判定窗口 %ds", CHECK_INTERVAL,
              LOOKBACK_WINDOW)
     while True:
-        rules = load_rules()  # 每轮重新加载，前端改规则即时生效
+        try:
+            rules = load_rules()  # 每轮重新加载，前端改规则即时生效
+        except Exception as exc:
+            # 规则库偶发异常（如 SQLite 锁冲突、文件被占用）不应让引擎线程死亡，
+            # 记日志后跳过本轮，下一周期重试
+            log.error("加载告警规则失败，跳过本轮检测: %s", exc)
+            time.sleep(CHECK_INTERVAL)
+            continue
         live_ids = {r["id"] for r in rules}
 
         # 规则被删除/停用时，清除其告警态（相当于自动"恢复"）
