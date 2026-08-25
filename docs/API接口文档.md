@@ -88,7 +88,7 @@ curl http://localhost:5000/api/realtime
       "voltage": 220.3, "current": 10.05, "power_factor": 0.95,
       "temperature": 35.6, "active_power": 2200.0, "frequency": 50.0,
       "reactive_power": 700.0, "apparent_power": 2310.0,
-      "energy_total": 12345.6, "status_word": 5.0
+      "energy_total": 5000.0, "status_word": 5.0
     },
     "units": { "voltage": "V", "current": "A", "temperature": "°C" },
     "quality": "good"

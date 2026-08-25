@@ -71,7 +71,9 @@ class PlantDataModel:
         self._current_base = 10.0    # A
         self._pf_base = 0.95         # 功率因数
         self._temp_base = 35.0       # °C 柜内基线温度
-        self._energy_kwh = 12345.6   # 累计电能初始值（kWh）
+        # 累计电能初始值：0.1kWh 为最小编码单位，初值必须保证 raw=值*10 不超过
+        # 16 位寄存器上限 65535（即 < 6553.5 kWh），否则 & 0xFFFF 编码回绕导致读数错误
+        self._energy_kwh = 5000.0    # kWh（raw=50000，距上限余量约 28 天连续累计）
         self._fault_flag = False     # 模拟偶发故障位
 
     def tick(self):
