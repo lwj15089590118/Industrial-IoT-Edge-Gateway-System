@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"sync"
@@ -153,13 +154,17 @@ func (m *ModbusClient) Connect() error {
 	return nil
 }
 
-// Close 关闭底层连接
+// Close 关闭底层连接并置空句柄：
+// 置空是关键——EnsureConnected 以 handler==nil 判定断线，
+// 若只 Close 不置空，重连逻辑永远不会触发。
 func (m *ModbusClient) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.handler != nil {
 		_ = m.handler.Close()
 	}
+	m.handler = nil
+	m.client = nil
 }
 
 // ReadRegisters 读取单个测点对应的保持寄存器，返回原始字节数组
@@ -271,8 +276,9 @@ func (p *MQTTPublisher) Close() {
 // convertRawValue 将 16 位寄存器原始值换算为工程量：value = raw*scale + offset
 func convertRawValue(raw uint16, reg RegisterConfig) float64 {
 	v := float64(raw)*reg.Scale + reg.Offset
-	// 保留 3 位小数精度，避免浮点尾数噪声
-	return float64(int(v*1000+0.5)) / 1000
+	// 保留 3 位小数精度，避免浮点尾数噪声；
+	// math.Round 对负数同样四舍五入（原 v*1000+0.5 强转写法在负数时会向零截断）
+	return math.Round(v*1000) / 1000
 }
 
 // collectOnce 执行一轮完整采集：逐测点读取保持寄存器并换算
@@ -281,10 +287,13 @@ func collectOnce(mc *ModbusClient, cfg *GatewayConfig) (*Reading, error) {
 	for _, reg := range cfg.Registers {
 		raw, err := mc.ReadRegisters(reg)
 		if err != nil {
-			reading.Quality = "bad"
 			return nil, fmt.Errorf("读取寄存器 %s(地址%d) 失败: %w", reg.Name, reg.Address, err)
 		}
-		// 每个 16 位寄存器占 2 字节，大端序；本表所有测点均为单寄存器
+		// 每个 16 位寄存器占 2 字节，大端序；先校验返回长度再取值，防止越界
+		if len(raw) < int(reg.Quantity)*2 {
+			return nil, fmt.Errorf("寄存器 %s(地址%d) 返回字节数不足: want %d, got %d",
+				reg.Name, reg.Address, int(reg.Quantity)*2, len(raw))
+		}
 		value := uint16(raw[0])<<8 | uint16(raw[1])
 		reading.Values[reg.Name] = convertRawValue(value, reg)
 		reading.Units[reg.Name] = reg.Unit
