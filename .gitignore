@@ -6,13 +6,14 @@ frontend/dist/
 
 # Go
 gateway/gateway
-gateway/gateway.exe
+gateway/*.exe
 
 # Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+.qa-venv/
 
 # Docker 数据卷
 docker/volumes/
