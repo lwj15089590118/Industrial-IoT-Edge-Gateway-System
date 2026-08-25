@@ -195,13 +195,14 @@ type MQTTPublisher struct {
 	mu   sync.Mutex
 }
 
-// NewMQTTPublisher 构造并完成首次连接
+// NewMQTTPublisher 构造并完成首次连接。
+// 注意：首连失败也必须返回可用对象（err 同时返回），
+// 否则主流程拿到 nil 后调用 Publish 会空指针崩溃——
+// Docker 编排下网关常先于 Broker 就绪，此路径是必现场景。
 func NewMQTTPublisher(cfg *MQTTConfig) (*MQTTPublisher, error) {
 	p := &MQTTPublisher{cfg: cfg}
-	if err := p.Connect(); err != nil {
-		return nil, err
-	}
-	return p, nil
+	err := p.Connect()
+	return p, err
 }
 
 // Connect 建立 MQTT 连接；配置了凭据则一并启用
@@ -224,6 +225,10 @@ func (p *MQTTPublisher) Connect() error {
 	cli := paho.NewClient(opts)
 	if token := cli.Connect(); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("连接 MQTT Broker 失败: %w", token.Error())
+	}
+	// 重建连接前先断开旧客户端，避免反复重连时泄漏底层 TCP 连接
+	if p.cli != nil {
+		p.cli.Disconnect(250)
 	}
 	p.cli = cli
 	return nil
@@ -359,13 +364,12 @@ func main() {
 	}
 	defer modbusClient.Close()
 
-	// 3. 建立 MQTT 连接（同样允许后续重连）
+	// 3. 建立 MQTT 连接（首连失败不退出：Publish 内部会在每次发布前重连）
 	publisher, err := NewMQTTPublisher(&cfg.MQTT)
 	if err != nil {
 		log.Printf("[警告] 初始 MQTT 连接失败，发布时将自动重试: %v", err)
-	} else {
-		defer publisher.Close()
 	}
+	defer publisher.Close()
 
 	// 4. 用 context 承载退出信号，保证协程能优雅结束
 	ctx, cancel := context.WithCancel(context.Background())
