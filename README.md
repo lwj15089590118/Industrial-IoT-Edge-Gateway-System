@@ -114,11 +114,14 @@ docker compose -f docker/docker-compose.yml ps
 ## 手动部署（开发调试）
 
 ```bash
+# 0. 安装 Python 依赖（注意：模拟器必须 pymodbus 2.x，装 3.x 会导入失败）
+pip install -r backend/requirements.txt -r simulator/requirements.txt
+
 # 1. 启动模拟 PLC
 python simulator/plc_simulator.py
 
-# 2. 启动 Go 网关
-cd gateway && go run main.go
+# 2. 启动 Go 网关（需 Go 1.21+，首次先拉取依赖）
+cd gateway && go mod download && go run main.go
 
 # 3. 启动后端 API（含 MQTT 订阅与 WebSocket）
 python backend/api_server.py

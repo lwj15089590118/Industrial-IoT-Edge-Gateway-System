@@ -1,0 +1,3 @@
+# 模拟 PLC 依赖（必须 2.x：本程序使用 pymodbus 2.x 同步服务端 API，
+# 3.x 接口不兼容，安装其它版本会导致 from pymodbus.server.sync 导入失败）
+pymodbus==2.5.3

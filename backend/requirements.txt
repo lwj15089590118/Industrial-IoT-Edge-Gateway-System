@@ -1,0 +1,7 @@
+# 后端 API 服务与告警引擎共用依赖（与 backend/Dockerfile 固定的版本一致）
+flask==3.0.0
+flask-cors==4.0.0
+flask-socketio==5.3.6
+simple-websocket==1.0.0
+paho-mqtt==1.6.1
+influxdb==5.3.1
