@@ -94,12 +94,18 @@ def influx_ready() -> bool:
 
 
 def write_metrics(payload: dict) -> None:
-    """把一帧网关数据写入 InfluxDB measurement=metrics。"""
+    """把一帧网关数据写入 InfluxDB measurement=metrics。
+    时间戳缺失/非法时跳过本帧（InfluxDB 以时间为索引，坏帧不能落库）。"""
+    ts = payload.get("timestamp")
+    if not isinstance(ts, (int, float)):
+        log.warning("网关数据缺少合法 timestamp，本帧丢弃: %r", ts)
+        return
     points = [{
         "measurement": "metrics",
-        "time": payload["timestamp"],          # 网关侧的 Unix 毫秒时间戳
+        "time": ts,                            # 网关侧的 Unix 毫秒时间戳
         "tags": {"device_id": payload.get("device_id", "unknown")},
-        "fields": {k: float(v) for k, v in payload.get("values", {}).items()},
+        "fields": {k: float(v) for k, v in payload.get("values", {}).items()
+                   if isinstance(v, (int, float))},
     }]
     try:
         influx.write_points(points, time_precision="ms")
@@ -314,8 +320,8 @@ def create_rule():
     """
     body = request.get_json(silent=True) or {}
     metric = body.get("metric")
-    if not metric or not str(metric).isalnum():
-        return jsonify({"code": 400, "msg": "metric 必填且仅限字母数字"}), 400
+    if not metric or not METRIC_RE.match(str(metric)):
+        return jsonify({"code": 400, "msg": "metric 必填且仅限字母/数字/下划线"}), 400
     level = body.get("level", "warning")
     if level not in ("warning", "critical"):
         return jsonify({"code": 400, "msg": "level 仅支持 warning/critical"}), 400
@@ -334,8 +340,16 @@ def create_rule():
 
 @app.route("/api/rules/<int:rule_id>", methods=["PUT"])
 def update_rule(rule_id):
-    """修改告警规则（字段可选，未传的字段保持不变）。"""
+    """修改告警规则（字段可选，未传的字段保持不变）。
+    metric/level 与新增接口同样校验——规则值会进入 InfluxQL 查询与判定逻辑，
+    放行非法值等于向后端埋注入点。"""
     body = request.get_json(silent=True) or {}
+    new_metric = body.get("metric", None)
+    if new_metric is not None and not METRIC_RE.match(str(new_metric)):
+        return jsonify({"code": 400, "msg": "metric 仅限字母/数字/下划线"}), 400
+    new_level = body.get("level", None)
+    if new_level is not None and new_level not in ("warning", "critical"):
+        return jsonify({"code": 400, "msg": "level 仅支持 warning/critical"}), 400
     with db() as conn:
         row = conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone()
         if row is None:
@@ -344,10 +358,10 @@ def update_rule(rule_id):
             "UPDATE alert_rules SET metric=?, min_value=?, max_value=?, level=?, enabled=?"
             " WHERE id=?",
             (
-                body.get("metric", row["metric"]),
+                str(new_metric) if new_metric is not None else row["metric"],
                 body.get("min_value", row["min_value"]),
                 body.get("max_value", row["max_value"]),
-                body.get("level", row["level"]),
+                new_level if new_level is not None else row["level"],
                 int(body.get("enabled", row["enabled"])),
                 rule_id,
             ),
