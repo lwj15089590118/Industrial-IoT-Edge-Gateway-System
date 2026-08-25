@@ -26,6 +26,7 @@ api_server.py — 工业物联网边缘网关系统 · 后端 API 服务
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -51,6 +52,12 @@ TOPIC_ALERTS = os.getenv("TOPIC_ALERTS", "factory/line1/alerts")     # 告警广
 
 RULES_DB_PATH = os.getenv("RULES_DB_PATH", os.path.join(os.path.dirname(__file__), "rules.db"))
 API_PORT = int(os.getenv("API_PORT", "5000"))
+
+# 输入白名单（防注入）：
+#   测点名：字母/数字/下划线，首字符不能是数字（power_factor 等合法名含下划线）
+#   聚合窗口：InfluxQL time 字面量，如 10s / 30s / 5m / 1h / 1d
+METRIC_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+WINDOW_RE = re.compile(r"^[1-9][0-9]*[smhdw]$")
 
 # 日志配置
 logging.basicConfig(
@@ -224,10 +231,14 @@ def api_history():
         window  聚合窗口（可选）如 30s / 5m，默认 10s，防止大范围查询拖垮前端
     """
     metric = request.args.get("metric", "voltage")
-    if not metric.isalnum() and metric != "*":
-        # 防注入：测点名只允许字母数字
-        return jsonify({"code": 400, "msg": "非法的 metric 参数"}), 400
+    if not METRIC_RE.match(metric):
+        # 防注入：测点名仅允许字母/数字/下划线（旧 isalnum 校验会错杀 power_factor
+        # 这类带下划线的合法测点，却又放行会生成非法查询的 "*"，一并修正）
+        return jsonify({"code": 400, "msg": "非法的 metric 参数（仅限字母/数字/下划线）"}), 400
     window = request.args.get("window", "10s")
+    if not WINDOW_RE.match(window):
+        # 防注入：窗口值直接拼入 InfluxQL，必须严格匹配 time 字面量格式
+        return jsonify({"code": 400, "msg": "非法的 window 参数（示例：10s/30s/5m/1h）"}), 400
 
     now = time.time()
     try:
@@ -235,6 +246,8 @@ def api_history():
         end = float(request.args.get("end", now))
     except ValueError:
         return jsonify({"code": 400, "msg": "start/end 需为 Unix 时间戳"}), 400
+    if end <= start:
+        return jsonify({"code": 400, "msg": "end 必须大于 start"}), 400
 
     sql = (
         f"SELECT mean(\"{metric}\") AS \"{metric}\" "

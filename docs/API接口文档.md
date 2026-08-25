@@ -218,7 +218,7 @@ curl -X POST http://localhost:5000/api/rules \
 
 | 字段 | 必填 | 校验规则 |
 |------|------|----------|
-| metric | 是 | 仅字母数字 |
+| metric | 是 | 仅限字母/数字/下划线，且首字符不能为数字（如 power_factor） |
 | level | 否 | 默认 warning，仅支持 warning/critical |
 | min_value / max_value | 否 | 数值或省略（null 表示不检查） |
 
