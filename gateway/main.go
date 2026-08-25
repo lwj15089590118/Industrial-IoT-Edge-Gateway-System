@@ -144,7 +144,7 @@ func (m *ModbusClient) Connect() error {
 	address := fmt.Sprintf("%s:%d", m.cfg.Modbus.Host, m.cfg.Modbus.Port)
 	handler := modbus.NewTCPClientHandler(address)
 	handler.Timeout = time.Duration(m.cfg.Modbus.Timeout) * time.Second
-	handler.SlaveID = m.cfg.Modbus.UnitID // Modbus 单元标识
+	handler.SlaveId = m.cfg.Modbus.UnitID // Modbus 单元标识（goburrow/modbus 字段名为 SlaveId）
 	if err := handler.Connect(); err != nil {
 		return fmt.Errorf("连接 Modbus 设备 %s 失败: %w", address, err)
 	}
