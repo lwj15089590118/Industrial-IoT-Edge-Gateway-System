@@ -121,7 +121,7 @@ func (r *Reading) ToJSON() ([]byte, error) {
 }
 
 // ============================================================================
-// 三、Modbus 客户端封装：连接、按测点逐个读取、指数退避重连
+// 三、Modbus 客户端封装：连接、连续地址段批量读取、惰性重连
 // ============================================================================
 
 // ModbusClient 带自动重连能力的 Modbus/TCP 客户端
@@ -167,14 +167,23 @@ func (m *ModbusClient) Close() {
 	m.client = nil
 }
 
-// ReadRegisters 读取单个测点对应的保持寄存器，返回原始字节数组
-func (m *ModbusClient) ReadRegisters(reg RegisterConfig) ([]byte, error) {
+// maxReadRegistersPerRead Modbus 规范限制：功能码 03 单次最多读 125 个保持寄存器
+const maxReadRegistersPerRead = 125
+
+// ReadRegisterBlock 一次批量读取 [start, start+quantity) 区间的保持寄存器（单事务）。
+// 相比"每测点一次事务"，批量读把 10 个测点的采集从 10 次 TCP 往返压缩为 1 次，
+// 显著降低每周期的锁竞争与协议开销。
+func (m *ModbusClient) ReadRegisterBlock(start, quantity uint16) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.client == nil {
 		return nil, fmt.Errorf("Modbus 连接未初始化")
 	}
-	return m.client.ReadHoldingRegisters(reg.Address, reg.Quantity)
+	if quantity == 0 || quantity > maxReadRegistersPerRead {
+		return nil, fmt.Errorf("非法的批量读取数量 %d（须在 1~%d 之间）",
+			quantity, maxReadRegistersPerRead)
+	}
+	return m.client.ReadHoldingRegisters(start, quantity)
 }
 
 // EnsureConnected 检查并按需重建连接（断线重连入口）
@@ -254,8 +263,14 @@ func (p *MQTTPublisher) Publish(payload []byte) error {
 		p.mu.Unlock()
 	}
 	token := cli.Publish(p.cfg.Topic, p.cfg.QoS, false, payload)
-	if token.WaitTimeout(5 * time.Second) && token.Error() != nil {
-		return fmt.Errorf("MQTT 发布失败: %w", token.Error())
+	// WaitTimeout 返回 false 表示 5 秒内未等到 Broker 确认（QoS1 的 PUBACK），
+	// 此时消息状态悬而未决，必须按失败处理——旧实现 `WaitTimeout(...) && token.Error() != nil`
+	// 在超时会短路为"成功"，与 QoS1 至少一次的承诺矛盾。
+	if !token.WaitTimeout(5 * time.Second) {
+		return fmt.Errorf("MQTT 发布超时: 5 秒内未收到 Broker 确认(QoS%d)", p.cfg.QoS)
+	}
+	if err := token.Error(); err != nil {
+		return fmt.Errorf("MQTT 发布失败: %w", err)
 	}
 	return nil
 }
@@ -281,22 +296,41 @@ func convertRawValue(raw uint16, reg RegisterConfig) float64 {
 	return math.Round(v*1000) / 1000
 }
 
-// collectOnce 执行一轮完整采集：逐测点读取保持寄存器并换算
+// collectOnce 执行一轮完整采集：将点表中地址连续的测点段合并为
+// 单次 ReadHoldingRegisters 批量读取，再按点表逐点切片解码换算。
+// 语义与旧实现保持一致：任一测点读取失败或字节不足，整轮采集失败。
 func collectOnce(mc *ModbusClient, cfg *GatewayConfig) (*Reading, error) {
 	reading := NewReading(cfg.MQTT.ClientID)
-	for _, reg := range cfg.Registers {
-		raw, err := mc.ReadRegisters(reg)
+	i, n := 0, len(cfg.Registers)
+	for i < n {
+		// 找出从第 i 个测点开始的连续地址段 [segStart, segEnd)
+		segStart := cfg.Registers[i].Address
+		segEnd := segStart + cfg.Registers[i].Quantity
+		j := i + 1
+		for j < n && cfg.Registers[j].Address == segEnd {
+			segEnd += cfg.Registers[j].Quantity
+			j++
+		}
+		quantity := segEnd - segStart
+		raw, err := mc.ReadRegisterBlock(segStart, quantity)
 		if err != nil {
-			return nil, fmt.Errorf("读取寄存器 %s(地址%d) 失败: %w", reg.Name, reg.Address, err)
+			return nil, fmt.Errorf("批量读取寄存器段(地址%d 数量%d) 失败: %w",
+				segStart, quantity, err)
 		}
-		// 每个 16 位寄存器占 2 字节，大端序；先校验返回长度再取值，防止越界
-		if len(raw) < int(reg.Quantity)*2 {
-			return nil, fmt.Errorf("寄存器 %s(地址%d) 返回字节数不足: want %d, got %d",
-				reg.Name, reg.Address, int(reg.Quantity)*2, len(raw))
+		// 按点表顺序切片解码：每个 16 位寄存器占 2 字节，大端序
+		offset := 0
+		for _, reg := range cfg.Registers[i:j] {
+			want := int(reg.Quantity) * 2
+			if offset+want > len(raw) {
+				return nil, fmt.Errorf("寄存器 %s(地址%d) 返回字节数不足: want %d, got %d",
+					reg.Name, reg.Address, want, len(raw)-offset)
+			}
+			value := uint16(raw[offset])<<8 | uint16(raw[offset+1])
+			reading.Values[reg.Name] = convertRawValue(value, reg)
+			reading.Units[reg.Name] = reg.Unit
+			offset += want
 		}
-		value := uint16(raw[0])<<8 | uint16(raw[1])
-		reading.Values[reg.Name] = convertRawValue(value, reg)
-		reading.Units[reg.Name] = reg.Unit
+		i = j
 	}
 	return reading, nil
 }
@@ -328,17 +362,20 @@ func collectorLoop(ctx context.Context, mc *ModbusClient, pub *MQTTPublisher, cf
 				mc.Close()
 				continue
 			}
-			failCount = 0
 
 			payload, err := reading.ToJSON()
 			if err != nil {
-				log.Printf("[采集] JSON 序列化失败: %v", err)
+				failCount++
+				log.Printf("[采集] JSON 序列化失败(连续%d次): %v", failCount, err)
 				continue
 			}
 			if err := pub.Publish(payload); err != nil {
-				log.Printf("[采集] MQTT 发布失败: %v", err)
+				failCount++
+				log.Printf("[采集] MQTT 发布失败(连续%d次): %v", failCount, err)
 				continue
 			}
+			// 整轮（采集 + 序列化 + 发布）全部成功才清零连续失败计数
+			failCount = 0
 			// 每秒一行采集日志，便于观察数据流通
 			log.Printf("[采集] %s %v", time.Now().Format("15:04:05"), reading.Values)
 		}

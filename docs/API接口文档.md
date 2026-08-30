@@ -32,7 +32,7 @@
 
 ### 1.3 跨域
 
-服务端已启用 CORS（`allow_origins: *`），前端开发服务器（localhost:3000）可直接访问。
+服务端启用 CORS 来源白名单（环境变量 `CORS_ORIGINS`，逗号分隔；默认放行本机前端 `http://localhost:3000` 与 `http://127.0.0.1:3000`，设为 `*` 可放开所有来源）。默认后端仅监听 `127.0.0.1`（容器部署经 `API_HOST=0.0.0.0` 覆盖）。
 
 ---
 
@@ -108,7 +108,7 @@ curl http://localhost:5000/api/realtime
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
-| metric | string | 是 | voltage | 测点名，仅限字母数字（防注入）：voltage/current/power_factor/temperature/active_power/frequency/reactive_power/apparent_power/energy_total/status_word |
+| metric | string | 是 | voltage | 测点名，仅限字母/数字/下划线且首字符不能为数字（防注入）：voltage/current/power_factor/temperature/active_power/frequency/reactive_power/apparent_power/energy_total/status_word |
 | start | int(Unix秒) | 否 | 1 小时前 | 起始时间 |
 | end | int(Unix秒) | 否 | 当前时间 | 截止时间 |
 | window | string | 否 | 10s | InfluxQL 聚合窗口，如 10s / 30s / 5m |
@@ -220,7 +220,7 @@ curl -X POST http://localhost:5000/api/rules \
 |------|------|----------|
 | metric | 是 | 仅限字母/数字/下划线，且首字符不能为数字（如 power_factor） |
 | level | 否 | 默认 warning，仅支持 warning/critical |
-| min_value / max_value | 否 | 数值或省略（null 表示不检查） |
+| min_value / max_value | 否 | 数值或省略（null 表示不检查）；非数值（字符串/布尔等）返回 400 |
 
 **响应** `201`
 

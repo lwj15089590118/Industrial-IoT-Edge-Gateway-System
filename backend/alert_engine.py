@@ -107,13 +107,48 @@ def fetch_metric_value(metric: str):
         return None
 
 
+def _is_number(v) -> bool:
+    """数值判定：bool 是 int 的子类，True/False 参与阈值比较会造成语义混乱，显式排除。"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+# 类型守卫计数：rule_id -> 连续跳过次数（非法规则每次评估 +1，用于观测脏规则频率）
+_invalid_rule_skip_count = {}
+# 已首次告警过的非法规则集合：避免同一规则每 2 秒刷一条错误日志
+_invalid_rule_reported = set()
+
+
+def report_invalid_rule(rule: dict, bad_fields: list) -> None:
+    """非法规则计数告警：首次发现打 error 日志，之后每累计 30 次再提醒一次，
+    避免日志风暴同时保证脏规则可被观测到。"""
+    rid = rule.get("id", "?")
+    _invalid_rule_skip_count[rid] = _invalid_rule_skip_count.get(rid, 0) + 1
+    count = _invalid_rule_skip_count[rid]
+    if rid not in _invalid_rule_reported:
+        _invalid_rule_reported.add(rid)
+        log.error("规则 #%s 的 %s 含非数值 %r，已跳过该规则判定——请通过 /api/rules 修正",
+                  rid, "/".join(bad_fields),
+                  {f: rule.get(f) for f in bad_fields})
+    elif count % 30 == 0:
+        log.warning("规则 #%s 非法（%s 非数值），已累计跳过 %d 次判定",
+                    rid, "/".join(bad_fields), count)
+
+
 def check_rule(rule: dict, value: float):
     """
     对单个规则执行阈值判定。
     返回 (是否越限, 告警消息)；min/max 为 None 表示对应方向不检查。
+    防御性类型守卫：SQLite 动态类型允许任意类型入库（历史脏数据/旧版本接口写入），
+    若 min/max 非数值，`value > max_v` 会抛 TypeError 并杀死引擎进程——
+    此处拦截：非法规则跳过判定并计数告警，绝不向外抛异常。
     """
     metric = rule["metric"]
     min_v, max_v = rule["min_value"], rule["max_value"]
+    bad_fields = [name for name, v in (("min_value", min_v), ("max_value", max_v))
+                  if v is not None and not _is_number(v)]
+    if bad_fields:
+        report_invalid_rule(rule, bad_fields)
+        return False, ""
     if max_v is not None and value > max_v:
         return True, f"{metric} 超上限: 当前值 {value:.2f} > {max_v}"
     if min_v is not None and value < min_v:
@@ -186,20 +221,25 @@ def run_engine() -> None:
                 del active[rid]
 
         for rule in rules:
-            metric = rule["metric"]
-            value = fetch_metric_value(metric)
-            if value is None:
-                continue  # 无数据（链路中断或测点名错误），跳过本轮
+            try:
+                # 单条规则判定全程异常隔离：任何一条规则出错（脏数据/类型问题）
+                # 只跳过该规则，不允许杀死整个引擎进程
+                metric = rule["metric"]
+                value = fetch_metric_value(metric)
+                if value is None:
+                    continue  # 无数据（链路中断或测点名错误），跳过本轮
 
-            violated, message = check_rule(rule, value)
-            if violated and rule["id"] not in active:
-                # 正常 -> 越限：触发告警并进入告警态
-                emit_alert(rule, value, message)
-                active[rule["id"]] = message
-            elif not violated and rule["id"] in active:
-                # 越限 -> 恢复：仅记日志并退出告警态，允许下次再触发
-                log.info("规则 #%d(%s) 已恢复正常区间，告警解除", rule["id"], metric)
-                del active[rule["id"]]
+                violated, message = check_rule(rule, value)
+                if violated and rule["id"] not in active:
+                    # 正常 -> 越限：触发告警并进入告警态
+                    emit_alert(rule, value, message)
+                    active[rule["id"]] = message
+                elif not violated and rule["id"] in active:
+                    # 越限 -> 恢复：仅记日志并退出告警态，允许下次再触发
+                    log.info("规则 #%d(%s) 已恢复正常区间，告警解除", rule["id"], metric)
+                    del active[rule["id"]]
+            except Exception as exc:
+                log.error("规则 #%s 判定异常，已跳过: %s", rule.get("id", "?"), exc)
 
         time.sleep(CHECK_INTERVAL)
 

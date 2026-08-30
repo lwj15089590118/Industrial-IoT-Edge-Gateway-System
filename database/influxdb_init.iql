@@ -16,14 +16,13 @@ CREATE DATABASE "factory_metrics";
 CREATE RETENTION POLICY "rp_30d" ON "factory_metrics"
     DURATION 30d REPLICATION 1 DEFAULT;
 
--- 3. （可选）创建连续查询：每 5 分钟对原始数据降采样，供大时间跨度趋势图查询
---    说明：mean(field) 按 5 分钟窗口聚合，写入同库 downsample_5m 测量点
-CREATE CONTINUOUS QUERY "cq_metrics_5m" ON "factory_metrics"
-BEGIN
-    SELECT mean(*) INTO "factory_metrics"."rp_30d"."metrics_5m"
-    FROM "factory_metrics"."rp_30d"."metrics"
-    GROUP BY time(5m), "device_id"
-END;
+-- 3. 关于 5 分钟降采样连续查询（cq_metrics_5m）：
+--    曾经在此创建指向 metrics_5m 的连续查询，但全项目没有任何查询方使用该表
+--    （/api/history 固定查原始 metrics 表，大跨度查询由前端自适应聚合窗口兜底），
+--    属于"建而不用"的死数据。已移除该 CQ；后续若接入降采样查询链路，再在此恢复：
+--    CREATE CONTINUOUS QUERY "cq_metrics_5m" ON "factory_metrics"
+--    BEGIN SELECT mean(*) INTO "factory_metrics"."rp_30d"."metrics_5m"
+--    FROM "factory_metrics"."rp_30d"."metrics" GROUP BY time(5m), "device_id" END;
 
 -- 4. 验证：查看数据库与保留策略是否创建成功
 SHOW DATABASES;

@@ -52,6 +52,13 @@ TOPIC_ALERTS = os.getenv("TOPIC_ALERTS", "factory/line1/alerts")     # 告警广
 
 RULES_DB_PATH = os.getenv("RULES_DB_PATH", os.path.join(os.path.dirname(__file__), "rules.db"))
 API_PORT = int(os.getenv("API_PORT", "5000"))
+# 默认仅监听本机回环地址（安全默认值）；容器部署经 API_HOST=0.0.0.0 覆盖，
+# 使 compose 内其它服务与端口映射可达。
+API_HOST = os.getenv("API_HOST", "127.0.0.1")
+# CORS 白名单：环境变量 CORS_ORIGINS，逗号分隔来源（安全默认值：仅放行本机前端开发服务器）。
+# 设为 "*" 可显式放开所有来源，仅限本地调试，生产环境应配置具体的前端站点地址。
+CORS_ORIGINS = [o.strip() for o in os.getenv(
+    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
 
 # 输入白名单（防注入）：
 #   测点名：字母/数字/下划线，首字符不能是数字（power_factor 等合法名含下划线）
@@ -71,8 +78,14 @@ log = logging.getLogger("api-server")
 # Flask 应用与插件初始化
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app)  # 允许前端开发服务器（localhost:3000）跨域访问
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+if "*" in CORS_ORIGINS:
+    # 显式放开所有来源（仅调试用）：保持旧行为
+    CORS(app)
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+else:
+    # 默认白名单模式：仅允许 CORS_ORIGINS 中列出的前端站点跨域访问
+    CORS(app, origins=CORS_ORIGINS)
+    socketio = SocketIO(app, cors_allowed_origins=CORS_ORIGINS, async_mode="threading")
 
 # 最新一帧数据快照（线程共享；dict 赋值原子性足够，无需加锁）
 latest_snapshot = {"ts": None, "data": None}
@@ -150,6 +163,14 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(RULES_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _valid_threshold(v) -> bool:
+    """min/max 阈值合法性：仅允许数值或 None（省略）。
+    布尔值虽是 int 子类，但 true/false 入库会造成语义混乱，一并拒绝。
+    背景告警引擎会用该值做 `value > max_v` 数值比较，字符串入库会在
+    引擎侧抛 TypeError（见 alert_engine.check_rule 的类型守卫），必须在此拦截。"""
+    return v is None or (isinstance(v, (int, float)) and not isinstance(v, bool))
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +346,10 @@ def create_rule():
     level = body.get("level", "warning")
     if level not in ("warning", "critical"):
         return jsonify({"code": 400, "msg": "level 仅支持 warning/critical"}), 400
+    if not (_valid_threshold(body.get("min_value"))
+            and _valid_threshold(body.get("max_value"))):
+        # 阈值必须为数值或省略：字符串等非数值入库会导致告警引擎比较时崩溃
+        return jsonify({"code": 400, "msg": "min_value/max_value 必须为数值或省略"}), 400
     with db() as conn:
         cur = conn.execute(
             "INSERT INTO alert_rules(metric, min_value, max_value, level, enabled, created_at)"
@@ -350,6 +375,10 @@ def update_rule(rule_id):
     new_level = body.get("level", None)
     if new_level is not None and new_level not in ("warning", "critical"):
         return jsonify({"code": 400, "msg": "level 仅支持 warning/critical"}), 400
+    for field in ("min_value", "max_value"):
+        if field in body and not _valid_threshold(body[field]):
+            # 仅校验显式传入的阈值字段（未传字段保持原值）
+            return jsonify({"code": 400, "msg": f"{field} 必须为数值或省略"}), 400
     with db() as conn:
         row = conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone()
         if row is None:
@@ -411,5 +440,8 @@ if __name__ == "__main__":
 
     # MQTT 订阅线程 + SocketIO 服务（阻塞运行）
     threading.Thread(target=start_mqtt_subscriber, daemon=True).start()
-    socketio.run(app, host="0.0.0.0", port=API_PORT, debug=False,
+    # host 默认 127.0.0.1（容器部署经 API_HOST=0.0.0.0 覆盖）；
+    # allow_unsafe_werkzeug=True 是 flask-socketio 在 Werkzeug 开发服务器上的必需参数，
+    # 开发服务器仅适合演示/内网基线，生产应换 gunicorn+gevent 并前置 Nginx 反代（见 README 安全说明）。
+    socketio.run(app, host=API_HOST, port=API_PORT, debug=False,
                  allow_unsafe_werkzeug=True)
