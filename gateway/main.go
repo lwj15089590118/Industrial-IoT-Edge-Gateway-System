@@ -84,11 +84,48 @@ func loadConfig(path string) (*GatewayConfig, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
-	// 配置合法性检查：至少要有一个测点才值得启动
-	if len(cfg.Registers) == 0 {
-		return nil, fmt.Errorf("配置文件中寄存器地址表为空")
+	// 配置合法性检查：配置错误属启动期错误，fail-fast 而非运行期崩溃
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
 	return cfg, nil
+}
+
+// validateConfig 配置合法性检查。配置错误必须在启动时暴露：
+// 例如 quantity=0 的测点混入连续地址段后，collectOnce 的批量读解码
+// （want=0 绕过字节数校验，raw[offset+1] 越界）会 panic 并杀死整个
+// 网关进程；collect_interval_ms<=0 会让 time.NewTicker 直接 panic。
+// 这类问题绝不能等到运行期才暴露。
+func validateConfig(cfg *GatewayConfig) error {
+	// 至少要有一个测点才值得启动
+	if len(cfg.Registers) == 0 {
+		return fmt.Errorf("配置文件中寄存器地址表为空")
+	}
+	for _, reg := range cfg.Registers {
+		// quantity 必填且在 1~125：0 会触发上述解码越界 panic；超过单次
+		// 批量读上限（Modbus 规范功能码 03 一次最多读 125 个保持寄存器）
+		// 则该测点所在段永远读取失败
+		if reg.Quantity < 1 || reg.Quantity > maxReadRegistersPerRead {
+			return fmt.Errorf("测点 %s(地址%d) quantity=%d 非法：须在 1~%d 之间",
+				reg.Name, reg.Address, reg.Quantity, maxReadRegistersPerRead)
+		}
+		// 地址区间必须落在保持寄存器地址空间内，同时杜绝连续段合并时
+		// segEnd 的 uint16 加法回绕把分段切错（address+quantity 跨 65535）
+		if int(reg.Address)+int(reg.Quantity) > 65536 {
+			return fmt.Errorf("测点 %s(地址%d) 读区间 [%d, %d) 超出保持寄存器地址空间 0~65535",
+				reg.Name, reg.Address, reg.Address, int(reg.Address)+int(reg.Quantity))
+		}
+	}
+	// 采集周期必须为正：time.NewTicker 对 <=0 的周期会 panic
+	if cfg.CollectInterval <= 0 {
+		return fmt.Errorf("collect_interval_ms=%d 非法：必须大于 0", cfg.CollectInterval)
+	}
+	// Modbus 超时必须 >=1 秒：0/负值会把库默认超时显式覆盖为零值，
+	// 读写失去有效超时保护（零值 deadline 在 Go 网络语义中等于不设超时）
+	if cfg.Modbus.Timeout < 1 {
+		return fmt.Errorf("modbus.timeout=%d 非法：必须 >=1 秒", cfg.Modbus.Timeout)
+	}
+	return nil
 }
 
 // ============================================================================

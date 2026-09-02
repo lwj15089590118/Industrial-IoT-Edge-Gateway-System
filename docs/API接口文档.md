@@ -109,8 +109,8 @@ curl http://localhost:5000/api/realtime
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
 | metric | string | 是 | voltage | 测点名，仅限字母/数字/下划线且首字符不能为数字（防注入）：voltage/current/power_factor/temperature/active_power/frequency/reactive_power/apparent_power/energy_total/status_word |
-| start | int(Unix秒) | 否 | 1 小时前 | 起始时间 |
-| end | int(Unix秒) | 否 | 当前时间 | 截止时间 |
+| start | int(Unix秒) | 否 | 1 小时前 | 起始时间；须为有限数值，非数字或 NaN/±Inf 返回 400 |
+| end | int(Unix秒) | 否 | 当前时间 | 截止时间；须为有限数值，非数字或 NaN/±Inf 返回 400 |
 | window | string | 否 | 10s | InfluxQL 聚合窗口，如 10s / 30s / 5m |
 
 **请求示例**
@@ -143,7 +143,7 @@ curl "http://localhost:5000/api/history?metric=voltage&window=10s&start=$(date -
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
-| start | int(Unix秒) | 否 | 1 小时前 | 起始时间 |
+| start | int(Unix秒) | 否 | 1 小时前 | 起始时间；须为有限数值，非数字或 NaN/±Inf 返回 400 |
 
 **请求示例**
 
@@ -221,6 +221,7 @@ curl -X POST http://localhost:5000/api/rules \
 | metric | 是 | 仅限字母/数字/下划线，且首字符不能为数字（如 power_factor） |
 | level | 否 | 默认 warning，仅支持 warning/critical |
 | min_value / max_value | 否 | 数值或省略（null 表示不检查）；非数值（字符串/布尔等）返回 400 |
+| enabled | 否 | 默认 1（启用）；仅接受布尔（true/false）或整数 0/1，其余（字符串/浮点/null/越界整数）返回 400 |
 
 **响应** `201`
 
@@ -230,7 +231,7 @@ curl -X POST http://localhost:5000/api/rules \
 
 ### 4.3 PUT /api/rules/{id} — 修改规则
 
-未传字段保持原值。
+未传字段保持原值；显式传入的 min_value/max_value/enabled 与 POST 同规则校验，非法值返回 400。
 
 ```bash
 curl -X PUT http://localhost:5000/api/rules/1 \

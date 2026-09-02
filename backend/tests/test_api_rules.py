@@ -102,3 +102,58 @@ def test_update_rule_missing_id_404(client):
     """规则不存在返回 404。"""
     resp = client.put("/api/rules/9999", json={"max_value": 1})
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# enabled 字段严格校验（复审报告11 第二轮 P2-1）
+# 修复前：POST {"enabled":"yes"} → 500、PUT {"enabled":null} → 500（裸异常）、
+#         POST {"enabled":1.5} → 201（静默截断为 1 入库）
+# 修复后：仅接受 bool 或整数 0/1，其余一律 400 且不入库
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_value", ["yes", "", "1", 1.5, -1, 2, None, [1], {"on": 1}])
+def test_create_rule_invalid_enabled_rejected(client, bad_value):
+    """字符串/浮点/越界整数/null/容器一律 400，不入库。"""
+    resp = _create(client, metric="pressure", enabled=bad_value)
+    assert resp.status_code == 400, f"enabled={bad_value!r} 应被拒绝"
+    assert resp.get_json()["code"] == 400
+    rules = client.get("/api/rules").get_json()["data"]
+    assert all(r["metric"] != "pressure" for r in rules)
+
+
+@pytest.mark.parametrize("good_value,stored", [(True, 1), (False, 0), (1, 1), (0, 0)])
+def test_create_rule_valid_enabled_ok(client, good_value, stored):
+    """bool 与 0/1 整数合法，按 1/0 入库。"""
+    resp = _create(client, metric="pressure", enabled=good_value)
+    assert resp.status_code == 201
+    rule = next(r for r in client.get("/api/rules").get_json()["data"]
+                if r["metric"] == "pressure")
+    assert rule["enabled"] == stored
+
+
+def test_create_rule_omit_enabled_defaults_on(client):
+    """未传 enabled 默认启用（保持旧行为）。"""
+    resp = client.post("/api/rules", json={"metric": "pressure"})
+    assert resp.status_code == 201
+    rule = next(r for r in client.get("/api/rules").get_json()["data"]
+                if r["metric"] == "pressure")
+    assert rule["enabled"] == 1
+
+
+@pytest.mark.parametrize("bad_value", ["yes", 1.5, None, 2])
+def test_update_rule_invalid_enabled_rejected_and_unchanged(client, bad_value):
+    """PUT 非法 enabled 一律 400 且原值不变（修复前 null 抛 TypeError 裸 500）。"""
+    resp = client.put("/api/rules/1", json={"enabled": bad_value})
+    assert resp.status_code == 400, f"enabled={bad_value!r} 应被拒绝"
+    rule1 = next(r for r in client.get("/api/rules").get_json()["data"] if r["id"] == 1)
+    assert rule1["enabled"] == 1
+
+
+@pytest.mark.parametrize("good_value,stored", [(True, 1), (False, 0)])
+def test_update_rule_enabled_ok(client, good_value, stored):
+    """PUT bool enabled 合法并按 1/0 落库。"""
+    resp = client.put("/api/rules/1", json={"enabled": good_value})
+    assert resp.status_code == 200
+    rule1 = next(r for r in client.get("/api/rules").get_json()["data"] if r["id"] == 1)
+    assert rule1["enabled"] == stored

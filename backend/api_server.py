@@ -25,6 +25,7 @@ api_server.py — 工业物联网边缘网关系统 · 后端 API 服务
 
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -173,6 +174,30 @@ def _valid_threshold(v) -> bool:
     return v is None or (isinstance(v, (int, float)) and not isinstance(v, bool))
 
 
+def _valid_enabled(v) -> bool:
+    """enabled 开关合法性：仅接受 bool（true/false）或整数 0/1，其余拒绝（400）。
+    旧实现 int(body.get("enabled", 1)) 直接强转：字符串 "yes" 抛 ValueError、
+    显式 null 抛 TypeError（均为裸 500）、浮点 1.5 被静默截断入库——
+    与 min/max 的 _valid_threshold 同一风格：类型不对直接拒绝，不做强转。"""
+    if isinstance(v, bool):
+        return True
+    return isinstance(v, int) and v in (0, 1)
+
+
+def _parse_unix_ts(raw, default):
+    """把 start/end 查询参数解析为有限浮点数（Unix 秒）。
+    缺省（未传）返回 default；非数字或 NaN/±Inf 返回 None，由调用方统一 400。
+    必须在此拦截浮点边缘值：NaN 使一切比较为 False，会绕过 end<=start 检查，
+    随后 int(nan) 抛 ValueError、int(inf) 抛 OverflowError（均为裸 500）。"""
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 # ---------------------------------------------------------------------------
 # MQTT 订阅：消费网关数据与告警广播，并转发给 WebSocket
 # ---------------------------------------------------------------------------
@@ -268,11 +293,11 @@ def api_history():
         return jsonify({"code": 400, "msg": "非法的 window 参数（示例：10s/30s/5m/1h）"}), 400
 
     now = time.time()
-    try:
-        start = float(request.args.get("start", now - 3600))
-        end = float(request.args.get("end", now))
-    except ValueError:
-        return jsonify({"code": 400, "msg": "start/end 需为 Unix 时间戳"}), 400
+    start = _parse_unix_ts(request.args.get("start"), now - 3600)
+    end = _parse_unix_ts(request.args.get("end"), now)
+    if start is None or end is None:
+        # 非数字 / NaN / ±Inf 统一 400（nan 曾绕过 end<=start 检查后 int(nan) 裸 500）
+        return jsonify({"code": 400, "msg": "start/end 需为有限数值（Unix 时间戳）"}), 400
     if end <= start:
         return jsonify({"code": 400, "msg": "end 必须大于 start"}), 400
 
@@ -306,10 +331,11 @@ def api_history():
 def api_alerts():
     """查询最近的告警记录，默认最近 1 小时，最多 200 条。"""
     now = time.time()
-    try:
-        start = float(request.args.get("start", now - 3600))
-    except ValueError:
-        start = now - 3600
+    start = _parse_unix_ts(request.args.get("start"), now - 3600)
+    if start is None:
+        # 非数字 / NaN / ±Inf 统一 400（inf/nan 曾使 int(start) 抛
+        # OverflowError/ValueError 裸 500；非数字曾静默回退默认值，现一并收口）
+        return jsonify({"code": 400, "msg": "start 需为有限数值（Unix 时间戳）"}), 400
     sql = (
         f"SELECT * FROM \"alerts\" WHERE time >= {int(start)}s "
         f"ORDER BY time DESC LIMIT 200"
@@ -350,12 +376,16 @@ def create_rule():
             and _valid_threshold(body.get("max_value"))):
         # 阈值必须为数值或省略：字符串等非数值入库会导致告警引擎比较时崩溃
         return jsonify({"code": 400, "msg": "min_value/max_value 必须为数值或省略"}), 400
+    enabled = body.get("enabled", 1)
+    if not _valid_enabled(enabled):
+        # 仅接受 bool 或 0/1 整数（显式传 null 也拒绝），不做 int() 强转
+        return jsonify({"code": 400, "msg": "enabled 仅接受 bool 或 0/1 整数"}), 400
     with db() as conn:
         cur = conn.execute(
             "INSERT INTO alert_rules(metric, min_value, max_value, level, enabled, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (metric, body.get("min_value"), body.get("max_value"),
-             level, int(body.get("enabled", 1)),
+             level, 1 if enabled else 0,
              datetime.now().isoformat(timespec="seconds")),
         )
         new_id = cur.lastrowid
@@ -379,6 +409,9 @@ def update_rule(rule_id):
         if field in body and not _valid_threshold(body[field]):
             # 仅校验显式传入的阈值字段（未传字段保持原值）
             return jsonify({"code": 400, "msg": f"{field} 必须为数值或省略"}), 400
+    if "enabled" in body and not _valid_enabled(body["enabled"]):
+        # 显式传入的 enabled 同样严格校验（含 null），未传字段保持原值
+        return jsonify({"code": 400, "msg": "enabled 仅接受 bool 或 0/1 整数"}), 400
     with db() as conn:
         row = conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone()
         if row is None:
@@ -391,7 +424,7 @@ def update_rule(rule_id):
                 body.get("min_value", row["min_value"]),
                 body.get("max_value", row["max_value"]),
                 new_level if new_level is not None else row["level"],
-                int(body.get("enabled", row["enabled"])),
+                1 if body.get("enabled", row["enabled"]) else 0,
                 rule_id,
             ),
         )
