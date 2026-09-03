@@ -1,5 +1,10 @@
 # Industrial-IoT-Edge-Gateway-System
 
+[![CI](https://github.com/lwj15089590118/Industrial-IoT-Edge-Gateway-System/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lwj15089590118/Industrial-IoT-Edge-Gateway-System/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 工业物联网边缘网关系统 —— 一个模拟工厂数据采集与边缘计算的全栈项目。
 
 ## 项目简介
@@ -95,7 +100,9 @@ Industrial-IoT-Edge-Gateway-System/
 └── README.md                   # 本文件
 ```
 
-## 快速部署（Docker 一键启动）
+## 快速开始
+
+### 一键启动（Docker Compose，推荐）
 
 ```bash
 # 1. 克隆或进入项目根目录
@@ -111,7 +118,9 @@ docker compose -f docker/docker-compose.yml ps
 #    http://localhost:3000
 ```
 
-## 手动部署（开发调试）
+启动后即可进入下方[验证方法](#验证方法)；各端口默认仅映射到宿主机 `127.0.0.1`，详见[安全说明](#安全说明演示基线请务必阅读)。
+
+### 手动部署（不用 Docker，本地开发调试）
 
 ```bash
 # 0. 安装 Python 依赖（注意：模拟器必须 pymodbus 2.x，装 3.x 会导入失败）
@@ -141,6 +150,42 @@ cd frontend && npm install && npm start
 
 详细部署步骤见 [docs/部署手册.md](docs/部署手册.md)，接口明细见 [docs/API接口文档.md](docs/API接口文档.md)。
 
+## CI 与测试
+
+- **后端**：62 项 pytest 用例（`backend/tests`，经 `conftest.py` 桩隔离，无需真实 InfluxDB/MQTT/Modbus 服务），本地 `python -m pytest backend/tests -q` 即可复跑；GitHub Actions 工作流见 [.github/workflows/ci.yml](.github/workflows/ci.yml)（checkout → Python 3.12 → 安装 `backend/requirements.txt` → compileall 语法检查 → pytest）；
+- **Go 网关侧静态审查通过，CI 暂不含 Go 构建**——本地无 Go 工具链，未实际跑绿的命令不写入 CI，待可本地验证后再补充 `go build` / `go vet`。
+
+## FAQ
+
+**Q1：南向采集用什么协议？**
+Modbus/TCP。网关将点表中地址连续的测点合并为连续地址段，单事务批量读取保持寄存器（功能码 03，单次最多 125 个寄存器），再按点表逐点切片解码并做量纲换算，把"每测点一次 TCP 往返"压缩为"每段一次"（见 `gateway/main.go` 的 `ReadRegisterBlock`）。
+
+**Q2：北向上报断网了怎么办？**
+MQTT 发布采用 QoS1，paho 客户端断线后指数退避自动重连、恢复后继续发布。但**当前未启用持久化会话，Broker 重启/断连期间的在途消息会丢失**；"网关本地环形缓冲 + 断网补传"属规划项（见下方 Roadmap），尚未实现。
+
+**Q3：为什么 API 默认只绑 `127.0.0.1`？**
+本项目定位本机/内网演示，REST 接口当前无认证，默认只绑回环地址、CORS 白名单仅放行本机前端，把暴露面收到最小；需要外部访问时用环境变量 `API_HOST`/`CORS_ORIGINS` 显式放开（Docker Compose 即通过该变量放开），并请先阅读[安全说明](#安全说明演示基线请务必阅读)。
+
+**Q4：提交非法告警规则会崩引擎吗？**
+不会。新增/修改规则的接口对入参逐项校验：测点名正则（防 InfluxQL 注入）、`level` 枚举（warning/critical）、阈值仅接受数值或省略、`enabled` 仅接受布尔/0-1，非法一律 400 拒绝，不进入判定逻辑；且告警引擎是**独立进程**，与 API 服务故障隔离，即便异常也不拖垮数据链路。
+
+**Q5：前端怎么起？**
+Docker 一键启动已包含前端（`:3000`）；本地开发则 `cd frontend && npm install && npm start`，仪表盘经 REST/WebSocket 连接 `:5000` 后端。
+
+**Q6：跑测试需要真实 InfluxDB/MQTT/Modbus 服务吗？**
+不需要。`backend/tests` 通过 `conftest.py` 以桩（stub）隔离外部依赖，62 项用例离线即可全绿，这也是 CI 中唯一纳入的测试步骤。
+
+## Roadmap
+
+以下为《系统设计说明书》中已明确的残留规划（均为**未实现**项，按优先级大致排序）：
+
+- [ ] **断网补传（断点续传）**：网关本地环形缓冲，Broker 恢复后回放，补齐 QoS1 无持久化会话的丢失窗口（设计说明书 §11 ②）；
+- [ ] **API 鉴权（Token/JWT）**：替换当前"127.0.0.1 绑定 + CORS 白名单"兜底的演示基线（§8.3）；
+- [ ] **MQTT/存储加固**：Mosquitto 账号认证 + TLS、InfluxDB 认证（§8.3）；
+- [ ] **多产线水平扩展**：主题层级已预留 `factory/lineN/#`，网关配置多设备点表即可扩展（§11 ①）；
+- [ ] **智能告警**：静态阈值之上叠加滑动窗口 z-score / 趋势预测（如温度持续上升预警）（§11 ③）；
+- [ ] **网关侧边缘计算**：谐波分析、需量统计等边缘算法，只上报结果而非原始波形（§11 ④）。
+
 ## 安全说明（演示基线，请务必阅读）
 
 本项目定位为**本机/内网演示**，为保持最小可读性未内置完整鉴权体系，当前基线如下：
@@ -155,4 +200,4 @@ cd frontend && npm install && npm start
 
 ## 许可证
 
-MIT License
+本项目基于 [MIT License](LICENSE) 发布。

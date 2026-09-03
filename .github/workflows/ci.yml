@@ -1,0 +1,38 @@
+name: CI
+
+# 说明（诚实原则）：
+# - 本工作流只纳入本地已预跑验证通过（全绿）的步骤：Python 后端依赖安装、
+#   语法编译检查与 62 项 pytest 用例（backend/tests，conftest 桩隔离，无需真实
+#   InfluxDB/MQTT/Modbus 服务）。
+# - Go 网关侧（gateway/）静态审查通过，CI 暂不含 Go 构建与测试——本地无 Go
+#   工具链，未实际跑绿的命令不写入 CI；待本地可验证后再补充 go build/go vet。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Syntax check (compileall backend)
+        run: python -m compileall -q backend
+
+      - name: Unit tests (62 cases, stub-isolated via conftest)
+        run: python -m pytest backend/tests -q
