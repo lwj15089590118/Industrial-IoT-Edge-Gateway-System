@@ -148,6 +148,18 @@ cd frontend && npm install && npm start
 - 历史趋势图出现持续曲线；
 - 人为调低电压阈值后，告警列表滚动出现"电压超限"告警。
 
+### 运行实况（Docker Compose 全链路真实数据渲染）
+
+![监控仪表盘](docs/img/dashboard.png)
+
+*仪表盘实况：电压/电流/功率因数/温度四张实时卡片（每秒刷新）、历史趋势图、
+告警列表（"current 超上限: 15.48 > 15.0" 为告警引擎真实触发）与生效中的告警规则；
+页脚为完整数据链路——模拟PLC → Modbus/TCP → Go网关 → MQTT → InfluxDB → 本仪表盘。*
+
+![电流趋势](docs/img/dashboard_current.png)
+
+*切换到电流指标（近15分钟）：模拟负载的周期性波形，数据经 Go 网关批量采集、MQTT QoS1 上报后由 InfluxDB 时序存储提供查询。*
+
 详细部署步骤见 [docs/部署手册.md](docs/部署手册.md)，接口明细见 [docs/API接口文档.md](docs/API接口文档.md)。
 
 ## CI 与测试
