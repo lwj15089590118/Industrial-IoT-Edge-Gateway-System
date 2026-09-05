@@ -6,8 +6,10 @@
 FROM golang:1.21-alpine AS builder
 WORKDIR /app
 # 先拷贝依赖清单再下载，利用 Docker 层缓存加速重复构建
+# 国内构建加固：goproxy.cn 直连可达（proxy.golang.org 在国内不可达）
+ENV GOPROXY=https://goproxy.cn,direct
 COPY go.mod go.sum* ./
-RUN go mod download || true
+RUN go mod download
 COPY . .
 # 容器构建时优先采用 config.docker.yaml（服务名寻址），无则回退本地 config.yaml
 RUN if [ -f config.docker.yaml ]; then cp config.docker.yaml config.yaml; fi

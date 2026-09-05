@@ -6,7 +6,7 @@
 # ============================================================================
 FROM python:3.10-slim
 
-RUN pip install --no-cache-dir \
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir \
     flask==3.0.0 \
     flask-cors==4.0.0 \
     flask-socketio==5.3.6 \
